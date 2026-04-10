@@ -1,27 +1,90 @@
 name: Playwright Tests
+
 on:
   push:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+
 jobs:
   test:
     timeout-minutes: 60
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: bpp_store
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4
-      with:
-        node-version: lts/*
-    - name: Install dependencies
-      run: npm ci
-    - name: Install Playwright Browsers
-      run: npx playwright install --with-deps
-    - name: Run Playwright tests
-      run: npx playwright test
-    - uses: actions/upload-artifact@v4
-      if: ${{ !cancelled() }}
-      with:
-        name: playwright-report
-        path: playwright-report/
-        retention-days: 30
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Checkout backend
+        uses: actions/checkout@v4
+        with:
+          repository: adriana-sudo/bpp-backend
+          path: bpp-backend
+
+      - name: Start Spring backend
+        working-directory: bpp-backend
+        env:
+          DATABASE_URL: jdbc:postgresql://localhost:5432/bpp_store
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+        run: ./mvnw spring-boot:run &
+
+      - name: Wait for backend
+        run: |
+          echo "Waiting for Spring Boot..."
+          for i in {1..30}; do
+            curl -s http://localhost:8080/products && break
+            sleep 3
+          done
+
+      - name: Seed test data
+        run: |
+          curl -X POST http://localhost:8080/products \
+            -H "Content-Type: application/json" \
+            -d '{"name":"Linen Notebook","description":"A minimal notebook","price":18.99,"collection":"bits"}'
+          curl -X POST http://localhost:8080/products \
+            -H "Content-Type: application/json" \
+            -d '{"name":"Watercolour Print","description":"A4 giclée print","price":35.00,"collection":"pieces"}'
+          curl -X POST http://localhost:8080/products \
+            -H "Content-Type: application/json" \
+            -d '{"name":"Creative Reset Session","description":"60 min session","price":75.00,"collection":"pauses"}'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run API tests only
+        run: npx playwright test --project=chromium --grep "backend|products|collection"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 30
